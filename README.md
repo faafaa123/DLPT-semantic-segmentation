@@ -51,7 +51,8 @@ maximum, then decreases it to a much lower minimum.
 
 ## Discussion
 
-The model used is DeeplabV3, trained for 40 epochs, which resulted in a Dice Score of `0.60363` on the test set.
+The model used is DeeplabV3, trained for 20 epochs, which resulted in a Dice Score of `0.76025` on the Kaggle competition Private Set.
+(latest update yet to be pushed).
 
 Further improvements to the data splitting process could incorporate the pixel count for each class in every image, 
 so that the images are distributed in a way that considers the occurrence of each class, weighted by the size of 
