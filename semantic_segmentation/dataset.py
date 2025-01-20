@@ -2,14 +2,18 @@
 import os
 
 # External imports
-import cv2
 from torch.utils.data import Dataset
+
+# Local imports
+from semantic_segmentation.utils import resize_image, resize_mask, load_image, load_mask
 
 
 class SemanticSegmentationDataset(Dataset):
     """
     Generic Dataset class for semantic segmentation datasets.
     """
+
+    # TODO: Argument to also return the original mask. To be used in with the validation set.
 
     def __init__(
         self,
@@ -18,6 +22,8 @@ class SemanticSegmentationDataset(Dataset):
         masks_folder,
         image_ids,
         transforms=None,
+        target_height: int | None = None,
+        target_width: int | None = None,
     ):
         """
         Args:
@@ -32,6 +38,8 @@ class SemanticSegmentationDataset(Dataset):
         self.images_folder = images_folder
         self.masks_folder = masks_folder
         self.image_ids = image_ids
+        self.target_height = target_height
+        self.target_width = target_width
         self.transforms = transforms
 
     def __len__(self):
@@ -45,9 +53,13 @@ class SemanticSegmentationDataset(Dataset):
         mask_path = os.path.join(self.data_path, self.masks_folder, f"{image_id}.png")
 
         # Load image and mask
-        image = cv2.imread(image_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        image = load_image(image_path)
+        mask = load_mask(mask_path)
+
+        # Resize image and mask
+        if self.target_height is not None and self.target_width is not None:
+            image = resize_image(image, self.target_width, self.target_height)
+            mask = resize_mask(mask, self.target_width, self.target_height)
 
         if self.transforms is not None:
             if mask is None:

@@ -1,19 +1,29 @@
 # Standard Library imports
-import os
-from pathlib import Path
+import traceback
+from functools import reduce
+from typing import Callable, Optional
 
 # External imports
 import torch
 import numpy as np
 from tqdm.autonotebook import tqdm
 from torch.utils.tensorboard import SummaryWriter
+from livelossplot import PlotLosses
+
+# Local imports
+from semantic_segmentation.utils import setup_system, create_checkpoint_dir
+from semantic_segmentation.configuration import SystemConfig
+
+
+INPUT_DTYPE = torch.float32
+LABEL_DTYPE = torch.long
 
 
 def main(
     model,
     optimizer,
     scheduler,
-    loss_fun,
+    loss_functions,
     scorer,
     train_dataloader,
     valid_dataloader,
@@ -21,10 +31,27 @@ def main(
     epochs,
     output_path,
     grad_accum_steps,
-    batch_size,
     device,
     use_aux=False,
+    system_config=SystemConfig(),
 ):
+    setup_system(system_config)
+    checkpoint_dir = create_checkpoint_dir(output_path)
+
+    groups = {
+        "Score": ["train_score", "valid_score"],
+        "Loss (cost function)": ["train_loss", "valid_loss"],
+    }
+
+    if len(loss_functions) > 1:
+        groups["Train loss components"] = [
+            f"train_loss{i+1}" for i in range(len(loss_functions))
+        ]
+        groups["Valid loss components"] = [
+            f"valid_loss{i+1}" for i in range(len(loss_functions))
+        ]
+
+    live_plot = PlotLosses(groups=groups)
 
     H = {
         "train_loss": [],
@@ -35,6 +62,7 @@ def main(
     }
     best_score = 0
 
+    # TODO: set output directory
     writer = SummaryWriter()
 
     try:
@@ -42,34 +70,46 @@ def main(
 
             print("\n[INFO] EPOCH: {}/{}".format(e + 1, epochs))
 
-            train_loss, train_score = train(
+            live_logs = {}
+
+            train_loss, train_loss_components, train_score = train(
                 model,
                 optimizer,
                 scheduler,
-                loss_fun,
+                loss_functions,
                 scorer,
                 train_dataloader,
                 grad_accum_steps,
-                batch_size,
                 device,
                 use_aux,
             )
 
-            valid_loss, valid_score, avg_per_class_score = validate(
-                model, loss_fun, scorer, valid_dataloader, batch_size, device
+            valid_loss, valid_loss_components, valid_score, mean_per_class_score = (
+                validate(model, loss_functions, scorer, valid_dataloader, device)
             )
 
+            # Liveloss tracker
+            live_logs["train_loss"] = train_loss
+            for i, train_loss_component in enumerate(train_loss_components):
+                live_logs[f"train_loss{i+1}"] = train_loss_component
+            live_logs["valid_loss"] = valid_loss
+            for i, valid_loss_component in enumerate(valid_loss_components):
+                live_logs[f"valid_loss{i+1}"] = valid_loss_component
+            live_logs["train_score"] = train_score
+            live_logs["valid_score"] = valid_score
+
+            # Tensorboard tracker
             writer.add_scalar("Loss/train", train_loss, e)
-            writer.add_scalar("Loss/val", valid_loss, e)
-
+            writer.add_scalar("Loss/valid", valid_loss, e)
             writer.add_scalar("Score/train", train_score, e)
-            writer.add_scalar("Score/val", valid_score, e)
+            writer.add_scalar("Score/valid", valid_score, e)
 
+            # Custom tracker
             H["train_loss"].append(train_loss)
             H["valid_loss"].append(valid_loss)
             H["train_score"].append(train_score)
             H["valid_score"].append(valid_score)
-            H["per_class_score"].append(avg_per_class_score)
+            H["per_class_score"].append(mean_per_class_score)
 
             print(
                 "Epoch train loss: {:.6f} | Epoch train score: {:.4f}".format(
@@ -85,137 +125,242 @@ def main(
             if valid_score > best_score:
                 best_score = valid_score
                 print(f"New best valid score: {best_score:.4f} at epoch {e+1}")
+                output_file_path = checkpoint_dir / f"deeplabv3_best_model.pt"
 
-                if not Path(output_path).exists():
-                    Path(output_path).mkdir(parents=True, exist_ok=True)
-
-                output_file_path = os.path.join(output_path, f"deeplabv3_best_model.pt")
+                # TODO: save train loss history
                 torch.save(
                     {
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
+                        "epoch": e,  # zero-indexed
                     },
                     output_file_path,
                 )
+
+            live_plot.update(live_logs)
+            live_plot.send()
+
     except KeyboardInterrupt:
         print("Interrupted! Returning output up to this point.")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        traceback.print_exc()
 
     finally:
         return H
 
 
+def calculate_loss_components(
+    logits, y_true, loss_functions: list, grad_accum_steps: int, weight=1.0
+) -> list[torch.Tensor]:
+    loss_components = []
+    for loss_fun in loss_functions:
+        loss_component = loss_fun(logits, y_true) / grad_accum_steps
+        loss_components.append(weight * loss_component)
+    return loss_components
+
+
+def step_optimizer(optimizer, is_batch_update: bool):
+    if is_batch_update:
+        optimizer.step()
+
+
+def step_scheduler(scheduler, is_batch_update: bool):
+    """Handle scheduler step based on scheduler type."""
+
+    if scheduler is None:
+        return
+
+    is_cycle = isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR)
+    if (is_cycle and is_batch_update) or (not is_cycle and not is_batch_update):
+        scheduler.step()
+
+
 def train(
-    model,
-    optimizer,
-    scheduler,
-    loss_fun,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+    loss_functions: list[Callable],
     scorer,
     dataloader,
-    grad_accum_steps,
-    batch_size,
-    device,
-    use_aux=False,
-):
-    """ """
+    grad_accum_steps: int,
+    device: torch.device,
+    use_aux: bool = False,
+    aux_weight: float = 0.5,
+) -> tuple[float, list[float], float]:
+    """
+    Train for one epoch.
+
+    Note:
+    All these "batches" should really be called "mini-batches".
+    https://www.coursera.org/learn/deep-neural-network/lecture/qcogH?t=332
+
+    For en explanation of gradient accumulation,
+    see "MLOps Engineering at Scale - Manning (2022), Ch 8.1.3".
+
+    Also check:
+    https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-accumulation
+
+    """
 
     model.train()
 
+    # Accumulate the total loss and score during the epoch, then compute the average at the end
+    epoch_loss_components = []
     epoch_loss = 0
     epoch_score = 0
 
-    num_steps = len(dataloader.dataset) // batch_size
-    prog_bar = tqdm(dataloader, total=num_steps)
-    for batch_index, (x, y) in enumerate(prog_bar):
+    num_steps = len(dataloader)
+    progress_bar = tqdm(dataloader, total=num_steps)
+    for batch_index, (inputs, y_true) in enumerate(progress_bar):
 
-        x = x.to(device, dtype=torch.float32)
-        y = y.squeeze()
-        y = y.to(device, dtype=torch.long)
+        inputs = inputs.to(device, dtype=INPUT_DTYPE)
+        y_true = y_true.to(device, dtype=LABEL_DTYPE)  # Shape (N,H,W)
 
-        output = model(x)
+        output = model(inputs)
 
-        pred_logits = output["out"]
-        if use_aux:
-            aux_loss = output["aux"]
+        logits = output["out"]  # Shape (N,C,H,W)
+        loss_components = calculate_loss_components(
+            logits, y_true, loss_functions, grad_accum_steps
+        )
+        # TODO: add a loss weight parameter
+        loss = reduce(lambda x, y: x + y, loss_components)
 
-        loss = loss_fun(pred_logits, y)
-
-        # For en explanation of this, see "MLOps Engineering at Scale-Manning (2022), Ch 8.1.3"
-        loss /= grad_accum_steps
-        if use_aux:
-            aux_loss /= grad_accum_steps
+        if use_aux and "aux" in output:
+            aux_logits = output["aux"]
+            aux_loss_components = calculate_loss_components(
+                aux_logits, y_true, loss_functions, grad_accum_steps, weight=aux_weight
+            )
+            aux_loss = reduce(lambda x, y: x + y, aux_loss_components)
             loss += aux_loss
 
-        epoch_loss += loss.item()
-        loss.backward()
-
-        pred_probs = pred_logits.softmax(dim=1)
-        max_indices = pred_probs.argmax(dim=1)
-        train_score = scorer(max_indices, y)
-        epoch_score += float(train_score.mean())
-
-        # Gradient accumulation
-        if ((batch_index + 1) % grad_accum_steps == 0) or (
+        # Gradient accumulation.
+        # Gradients are calculated for each batch and accumulated over multiple steps.
+        # The model weights are updated only after `grad_accum_steps` steps or at the end of the dataset
+        # (if it's the final batch).
+        is_batch_update = ((batch_index + 1) % grad_accum_steps == 0) or (
             batch_index + 1 == len(dataloader)
-        ):
-
-            # Weights update
-            optimizer.step()
-
-            # Optimizer Learning Rate update
-            scheduler.step()
-
-            optimizer.zero_grad()  # TODO: test passing set_to_none=True
-
-        prog_bar.set_description(
-            desc=f"Training loss: {loss.item():.4f} | score: {float(train_score.mean()):.2f}"
         )
 
-    # Average train metrics during the epoch
-    avg_loss = epoch_loss / num_steps
-    avg_score = epoch_score / num_steps
+        # Reset the gradients of all optimized tensors
+        optimizer.zero_grad(set_to_none=True)
 
-    return avg_loss, avg_score
+        # Compute gradients
+        loss.backward()
+
+        # Apply the accumulated gradients to update the model's weights
+        step_optimizer(optimizer, is_batch_update)
+
+        step_scheduler(scheduler, is_batch_update)
+
+        # Accumulate total epoch loss
+        epoch_loss += loss.item()
+
+        # Append loss components to list
+        if use_aux and "aux" in output:
+            epoch_loss_components.append(
+                [
+                    component.item() + aux_comp.item()
+                    for component, aux_comp in zip(loss_components, aux_loss_components)
+                ]
+            )
+        else:
+            epoch_loss_components.append(
+                [component.item() for component in loss_components]
+            )
+
+        # Accumulate score
+        logits = logits.detach()
+        pred_probs = logits.softmax(dim=1)
+        max_indices = pred_probs.argmax(dim=1)
+        train_score = scorer(max_indices, y_true)
+        epoch_score += float(train_score.mean())
+
+        progress_bar.set_description(
+            desc=f"Training loss: {loss.item() * grad_accum_steps:.4f} | score: {float(train_score.mean()):.2f}"
+        )
+
+    # Average train loss/score during the epoch
+    # To obtain the mean loss, the total epoch loss is divided by (num_steps / grad_accum_steps) because:
+    #   total_epoch_loss = num_steps * (loss/grad_accum_steps)
+    #   loss = (total_epoch_loss/num_steps)*grad_accum_steps
+    mean_epoch_loss = epoch_loss / (num_steps / grad_accum_steps)
+    mean_epoch_score = epoch_score / num_steps
+    mean_epoch_loss_components = (
+        np.array(epoch_loss_components).sum(0) / (num_steps / grad_accum_steps)
+    ).tolist()
+
+    return mean_epoch_loss, mean_epoch_loss_components, mean_epoch_score
 
 
-def validate(model, loss_fun, scorer, dataloader, batch_size, device):
+def validate(
+    model, loss_functions: list[Callable], scorer, dataloader, device
+) -> tuple[float, list[float], float, np.ndarray[np.float32]]:
     """ """
 
     epoch_loss = 0
+    epoch_loss_components = None
     epoch_score = 0
     per_class_score = []
 
     model.eval()
+
+    # Consider instead using `with torch.inference_mode():`
+    # https://pytorch-dev-podcast.simplecast.com/episodes/inference-mode
     with torch.no_grad():
 
-        num_steps = len(dataloader.dataset) // batch_size
-        prog_bar = tqdm(dataloader, total=num_steps)
-        for x, y in prog_bar:
-            x = x.to(device, dtype=torch.float32)
-            y = y.squeeze()
-            y = y.to(device, dtype=torch.long)
+        num_steps = len(dataloader)
+        progress_bar = tqdm(dataloader, total=num_steps)
+        for inputs, y_true in progress_bar:
+            inputs = inputs.to(device, dtype=INPUT_DTYPE)
+            y_true = y_true.to(device, dtype=LABEL_DTYPE)
 
+            logits = model(inputs)["out"]  # Shape (N,C,H,W)
+            loss_components: list[torch.Tensor] = []
+            # Notice how in validation, the aux branch is not used.
             # Loss
-            pred_logits = model(x)["out"]
-            loss = loss_fun(pred_logits, y)
+            for i, loss_fun in enumerate(loss_functions):
+                loss_component = loss_fun(logits, y_true)
+                loss_components.append(loss_component)
+            loss = reduce(lambda x, y: x + y, loss_components)
+
+            # Accumulate loss
             epoch_loss += loss.item()
+            if epoch_loss_components is None:
+                epoch_loss_components: list[float] = [0] * len(loss_components)
+            for i, component in enumerate(loss_components):
+                epoch_loss_components[i] += component.item()
 
             # Score
-            pred_probs = pred_logits.softmax(dim=1)
+            pred_probs = logits.softmax(dim=1)
             max_indices = pred_probs.argmax(dim=1)
-            score = scorer(max_indices, y)
+            score = scorer(max_indices, y_true)
             epoch_score += float(score.mean())
 
             # Per-class validation score
             per_class_score.append(score.reshape(1, -1))
 
-            prog_bar.set_description(
+            progress_bar.set_description(
                 desc=f"Validation loss: {loss.item():.4f} | score: {float(score.mean()):.2f}"
             )
 
+        # Average train loss/score during the epoch
+        mean_epoch_loss = epoch_loss / num_steps
+        mean_epoch_score = epoch_score / num_steps
+        mean_epoch_loss_components = [
+            epoch_loss_components[i] / num_steps
+            for i in range(len(epoch_loss_components))
+        ]
+
         # Average validation metrics during the epoch
-        avg_loss = epoch_loss / num_steps
-        avg_score = epoch_score / num_steps
-        avg_per_class_score = (
+        mean_per_class_score = (
             np.concatenate(per_class_score, axis=0).sum(axis=0) / num_steps
         )
-    return avg_loss, avg_score, avg_per_class_score
+
+    return (
+        mean_epoch_loss,
+        mean_epoch_loss_components,
+        mean_epoch_score,
+        mean_per_class_score,
+    )

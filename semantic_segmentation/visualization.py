@@ -1,12 +1,15 @@
+# Standard Library imports
+from pathlib import Path
+
 # External imports
-import torch
+import pandas as pd
 import cv2
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator
 from tqdm import tqdm
 from pytorch_toolbelt.utils.rle import rle_encode, rle_to_string, rle_decode
-
 
 # Local imports
 from semantic_segmentation.utils import (
@@ -85,12 +88,15 @@ def bar_plot(x, y, xlabel="", ylabel="", title="", figsize=(10, 6)):
     plt.show()
 
 
-def draw_mask_overlay(image, mask, class_id, alpha=0.5, color=(0, 0, 1)):
+def draw_mask_overlay(
+    image, mask, class_id: int, alpha=0.5, color=(0, 0, 1), is_tensor=True
+):
     """ """
 
-    image = denormalize(image)
-    image = image.permute(1, 2, 0).detach().cpu().numpy()  # CHW -> HWC
-    mask = mask.detach().cpu().numpy().astype(np.uint8)
+    if is_tensor:
+        image = denormalize(image)
+        image = image.permute(1, 2, 0).detach().cpu().numpy()  # CHW -> HWC
+        mask = mask.detach().cpu().numpy().astype(np.uint8)
 
     overlay = np.copy(image)
     overlay[mask == class_id] = color
@@ -215,7 +221,9 @@ def draw_predictions(model, dataset, num_predictions, include_mask, device):
             else:
                 image, mask = element, None
 
-            pred = get_prediction(model, image, device)
+            image = image.to(device, dtype=torch.float32)
+            image = image.unsqueeze(0)
+            pred = get_prediction(model, image)
             draw_image_mask_prediction(
                 image, ax[i], mask=mask, pred=pred, is_cv_im=False
             )

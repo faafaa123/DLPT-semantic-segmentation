@@ -1,9 +1,11 @@
 pandas
 opencv-python-headless
-albumentations
+albumentations==1.3.1
 torch-lr-finder
 segmentation-models-pytorch
 pytorch_toolbelt
 iterative-stratification
 torcheval
 tensorboard
+torchinfo
+livelossplot
