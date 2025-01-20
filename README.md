@@ -20,7 +20,7 @@ the following 12 classes:
 Examples:
 ![img.png](media/img.png)
 
-## The method used
+## The methods used
 
 Fine-tuning of a DeepLabV3 ResNet-101 pre-trained model using a custom PyTorch training loop. The objective was to learn
 how to manually implement all the required steps, particularly the ones of the training loop.
@@ -28,11 +28,11 @@ how to manually implement all the required steps, particularly the ones of the t
 - The dataset was split using a stratified shuffle split scheme into train and validation subsets with 80% and 20% of the 
 available data, respectively. The stratification was done based on the presence or not of a class in each image. 
 
-- Various augmentations techniques were used to try to improve generalization.
-
-- The loss function used was an equally weighted combination of the Focal Loss and the Soft Dice Loss:
-  - The Focal Loss is a modification of the Cross-Entropy loss focused on learning from hard negative examples.
-  - The Soft Dice Loss is effective in addressing the challenge of imbalanced foreground and background regions.
+- Various loss functions were tested, including:
+  - The Focal Loss: is a modification of the Cross-Entropy loss focused on learning from hard negative examples.
+  - The Soft Dice Loss: is effective in addressing the challenge of imbalanced foreground and background regions.
+  - An equally weighted combination of the Focal Loss and the Soft Dice Loss.
+  - The Tversky Loss
 
 - An SGD optimizer using the setup used by the YOLOv5 training script, where three parameter groups are defined for 
 different weight decay configurations.
@@ -51,11 +51,6 @@ maximum, then decreases it to a much lower minimum.
 
 ## Discussion
 
-The model used is DeeplabV3, trained for 20 epochs, which resulted in a Dice Score of `0.76025` on the Kaggle competition Private Set.
-(latest update yet to be pushed).
-
-Further improvements to the data splitting process could incorporate the pixel count for each class in every image, 
-so that the images are distributed in a way that considers the occurrence of each class, weighted by the size of 
-the objects.
+The model used is DeeplabV3, trained for 60 epochs with unscaled images (H720 x W1280), which resulted in a Dice Score of `0.79776` on the Kaggle competition Private Set.
 
 See the [notebook](project-4-deep-learning-with-pytorch-2024.ipynb).
