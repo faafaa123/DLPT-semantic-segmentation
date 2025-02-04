@@ -291,13 +291,17 @@ def load_checkpoint(model, optimizer, input_path: str, filename: str | None, sca
     # Load the state dict on the CPU. If the state was saved on the GPU, when reloaded, PyTorch places it back on GPU.
     # https://github.com/huggingface/accelerate/issues/296#issuecomment-1082184342
     checkpoint = torch.load(checkpoint_path, weights_only=True, map_location="cpu")
-    checkpoint = torch.load(checkpoint_path, weights_only=True)
+    print(f"Successfully loaded checkpoint from '{checkpoint_path}'")
+    print(f"Checkpoint was saved at epoch {checkpoint['epoch']+1}.")  # zero-indexed
 
     # Load model weights
     model.load_state_dict(checkpoint["model_state_dict"])
+    print(f"Successfully loaded model weights.")
 
     # Load optimizer weights
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    print(f"Successfully loaded optimizer weights.")
+
     if "scaler" in checkpoint and scaler.is_enabled:
         # Resume Amp-enabled runs with bitwise accuracy
         scaler.load_state_dict(checkpoint["scaler"])
