@@ -527,9 +527,7 @@ def inference(
             ############################################################################################################
             # Score
             ############################################################################################################
-            print("y_pred.shape, y_true.shape")
             # torch.Size([1, 720, 1280]) torch.Size([720, 1280])
-            print(y_pred.shape, y_true.shape)
             score = scorer(y_pred, y_true)
             scores.append(score.mean())
 
