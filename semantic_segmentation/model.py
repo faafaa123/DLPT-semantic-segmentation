@@ -9,7 +9,7 @@ from torchvision.models.segmentation import (
 )
 
 
-def make_deeplabv3_resnet101(num_classes, device):
+def make_deeplabv3_resnet101(num_classes):
     """
     "Dilated convolution" is also called "Atrous convolution"
     """
@@ -32,7 +32,7 @@ def make_deeplabv3_resnet101(num_classes, device):
         in_channels=256, out_channels=num_classes, kernel_size=1
     )
 
-    return model.to(device)
+    return model
 
 
 def unfreeze_deeplabv3_resnet101(model, layers: list[str] | None = None):
