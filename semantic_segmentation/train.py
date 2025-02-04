@@ -207,6 +207,10 @@ def main(
 
             grid = make_grid(activations["layer4_0_conv1"], num_rows=4)
             writer.add_image("layer4_0_conv1", grid, e, dataformats="HW")
+
+            if scheduler is not None and not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                scheduler.step()
+
     except KeyboardInterrupt:
         print("Interrupted! Returning output up to this point.")
 
