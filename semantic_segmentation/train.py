@@ -18,6 +18,34 @@ from semantic_segmentation.configuration import SystemConfig
 INPUT_DTYPE = torch.float32
 LABEL_DTYPE = torch.long
 
+def make_grid(output_tensor, num_rows):
+    """
+    Converts a tensor into a grid of images stacked row-wise.
+
+    Args:
+        output_tensor (torch.Tensor): Input tensor with shape (batch_size, n_channels, H, W).
+        num_rows (int): Number of rows in the grid.
+
+    Returns:
+        np.ndarray: Grid of images as a NumPy array.
+    """
+    plt.figure(figsize=(20, 5))
+    output_tensor = output_tensor.cpu().detach()
+
+    batch_size, n_channels, image_height, image_width = output_tensor.shape
+    column_images = []
+    grid_images = []
+
+    for i in range(n_channels):
+        image = output_tensor[0, i]
+        column_images.append(image)
+
+        if len(column_images) == num_rows:
+            grid_images.append(np.concatenate(column_images, axis=0))
+            column_images = []
+
+    return np.concatenate(grid_images, axis=1) if grid_images else np.array([])
+
 
 def main(
     model,
@@ -66,6 +94,20 @@ def main(
 
     # TODO: set output directory
     writer = SummaryWriter()
+
+    # From:
+    # https://web.stanford.edu/~nanbhas/blog/forward-hooks-pytorch/
+    # https://medium.com/@rekalantar/how-to-visualize-layer-activations-in-pytorch-d0be1076ecc3
+    activations = {}
+    def get_activation(name):
+        def hook(model, input, output):
+            activations[name] = output.detach()
+
+        return hook
+
+    # register forward hooks on the layers of choice
+    model.backbone["maxpool"].register_forward_hook(get_activation("maxpool"))
+    model.backbone["layer4"][0].conv1.register_forward_hook(get_activation("layer4_0_conv1"))
 
     try:
         for e in range(starting_epoch, epochs + 1):
@@ -159,6 +201,12 @@ def main(
             live_plot.update(live_logs)
             live_plot.send()
 
+            # Plot activations to Tensorboard
+            grid = make_grid(activations["maxpool"], num_rows=4)
+            writer.add_image("maxpool", grid, e, dataformats="HW")
+
+            grid = make_grid(activations["layer4_0_conv1"], num_rows=4)
+            writer.add_image("layer4_0_conv1", grid, e, dataformats="HW")
     except KeyboardInterrupt:
         print("Interrupted! Returning output up to this point.")
 
