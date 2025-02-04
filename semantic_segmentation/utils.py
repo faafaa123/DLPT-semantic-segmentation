@@ -250,7 +250,7 @@ def resize_mask(mask, width: int, height: int, is_tensor: bool = False):
     return cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
 
 
-def load_checkpoint(model, optimizer, input_path: str, filename: str | None):
+def load_checkpoint(model, optimizer, input_path: str, filename: str | None, scaler:torch.amp.grad_scaler.GradScaler):
     """
     Load a saved checkpoint containing model and optimizer states.
 
@@ -295,9 +295,13 @@ def load_checkpoint(model, optimizer, input_path: str, filename: str | None):
 
     # Load optimizer weights
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if "scaler" in checkpoint and scaler.is_enabled:
+        # Resume Amp-enabled runs with bitwise accuracy
+        scaler.load_state_dict(checkpoint["scaler"])
+        print(f"Successfully loaded scaler.")
+    else:
+        print(f"No scaler has been loaded. {'Scaler is disabled. ' if not scaler.is_enabled() else ''} {'No scaler available in checkpoint.' if not 'scaler' in checkpoint else ''}")
 
-    print(f"Successfully loaded checkpoint from '{checkpoint_path}'")
-    print(f"Checkpoint was saved at epoch {checkpoint['epoch']+1}.")  # zero-indexed
 
 
 def create_checkpoint_dir(checkpoint_dir: str | Path) -> Path:
@@ -471,8 +475,9 @@ def inference(
                 config.RESIZE_WIDTH,
             )
 
-            y_pred = model(image)["out"]
-            y_pred = y_pred.detach()
+            with torch.autocast(device_type=str(config.DEVICE), dtype=torch.float16):
+                y_pred = model(image)["out"]
+                y_pred = y_pred.detach()
 
             # y_pred shape: (N,C,H,W)
             if upscale_prediction:
