@@ -68,9 +68,9 @@ def main(
     writer = SummaryWriter()
 
     try:
-        for e in range(starting_epoch, epochs):
+        for e in range(starting_epoch, epochs + 1):
 
-            print("\n[INFO] EPOCH: {}/{}".format(e + 1, epochs))
+            print("\n[INFO] EPOCH: {}/{}".format(e, epochs))
 
             live_logs = {}
 
@@ -129,7 +129,7 @@ def main(
 
             if valid_score > best_score:
                 best_score = valid_score
-                print(f"New best valid score: {best_score:.4f} at epoch {e+1}")
+                print(f"New best valid score: {best_score:.4f} at epoch {e}")
                 output_file_path = checkpoint_dir / f"deeplabv3_best_model.pt"
 
                 # TODO: save train loss history
@@ -138,7 +138,7 @@ def main(
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
                         "scaler": scaler.state_dict(),
-                        "epoch": e,  # zero-indexed
+                        "epoch": e,  # one-indexed
                     },
                     output_file_path,
                 )
