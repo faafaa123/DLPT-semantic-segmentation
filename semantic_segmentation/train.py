@@ -104,10 +104,23 @@ def main(
             live_logs["valid_score"] = valid_score
 
             # Tensorboard tracker
-            writer.add_scalar("Loss/train", train_loss, e)
-            writer.add_scalar("Loss/valid", valid_loss, e)
-            writer.add_scalar("Score/train", train_score, e)
-            writer.add_scalar("Score/valid", valid_score, e)
+            writer.add_scalars(
+                "Loss",
+                {
+                    "Train": train_loss,
+                    "Valid": valid_loss,
+                },
+                e,
+            )
+
+            writer.add_scalars(
+                "Score",
+                {
+                    "Train": train_score,
+                    "Valid": valid_score,
+                },
+                e,
+            )
 
             # Custom tracker
             H["train_loss"].append(train_loss)
