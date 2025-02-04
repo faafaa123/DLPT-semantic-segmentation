@@ -25,6 +25,7 @@ def main(
     scheduler,
     loss_functions,
     scorer,
+    scaler,
     train_dataloader,
     valid_dataloader,
     starting_epoch,
@@ -33,6 +34,7 @@ def main(
     grad_accum_steps,
     device,
     use_aux=False,
+    use_amp=False,
     system_config=SystemConfig(),
 ):
     setup_system(system_config)
@@ -73,15 +75,18 @@ def main(
             live_logs = {}
 
             train_loss, train_loss_components, train_score = train(
-                model,
-                optimizer,
-                scheduler,
-                loss_functions,
-                scorer,
-                train_dataloader,
-                grad_accum_steps,
-                device,
-                use_aux,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                loss_functions=loss_functions,
+                scorer=scorer,
+                dataloader=train_dataloader,
+                grad_accum_steps=grad_accum_steps,
+                device=device,
+                scaler=scaler,
+                use_aux=use_aux,
+                aux_weight=0.5,
+                use_amp=use_amp,
             )
 
             valid_loss, valid_loss_components, valid_score, mean_per_class_score = (
@@ -132,6 +137,7 @@ def main(
                     {
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
+                        "scaler": scaler.state_dict(),
                         "epoch": e,  # zero-indexed
                     },
                     output_file_path,
@@ -161,20 +167,13 @@ def calculate_loss_components(
     return loss_components
 
 
-def step_optimizer(optimizer, is_batch_update: bool):
-    if is_batch_update:
-        optimizer.step()
-
-
-def step_scheduler(scheduler, is_batch_update: bool):
-    """Handle scheduler step based on scheduler type."""
-
-    if scheduler is None:
-        return
-
-    is_cycle = isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR)
-    if (is_cycle and is_batch_update) or (not is_cycle and not is_batch_update):
-        scheduler.step()
+def is_batch_update(batch_index, grad_accum_steps, dataloader):
+    """
+    For Gradient accumulation.
+    The model weights are updated only after `grad_accum_steps` steps or at the end of the dataset
+    (if it's the final batch).
+    """
+    return ((batch_index + 1) % grad_accum_steps == 0) or (batch_index + 1 == len(dataloader))      
 
 
 def train(
@@ -186,8 +185,10 @@ def train(
     dataloader,
     grad_accum_steps: int,
     device: torch.device,
+    scaler,
     use_aux: bool = False,
     aux_weight: float = 0.5,
+    use_amp=False
 ) -> tuple[float, list[float], float]:
     """
     Train for one epoch.
@@ -201,6 +202,8 @@ def train(
 
     Also check:
     https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-accumulation
+    https://discuss.pytorch.org/t/why-do-we-need-to-set-the-gradients-manually-to-zero-in-pytorch/4903/20
+    
 
     """
 
@@ -218,41 +221,45 @@ def train(
         inputs = inputs.to(device, dtype=INPUT_DTYPE)
         y_true = y_true.to(device, dtype=LABEL_DTYPE)  # Shape (N,H,W)
 
-        output = model(inputs)
+        with torch.autocast(device_type=str(device), dtype=torch.float16, enabled=use_amp):
+            output = model(inputs)
 
-        logits = output["out"]  # Shape (N,C,H,W)
-        loss_components = calculate_loss_components(
-            logits, y_true, loss_functions, grad_accum_steps
-        )
-        # TODO: add a loss weight parameter
-        loss = reduce(lambda x, y: x + y, loss_components)
-
-        if use_aux and "aux" in output:
-            aux_logits = output["aux"]
-            aux_loss_components = calculate_loss_components(
-                aux_logits, y_true, loss_functions, grad_accum_steps, weight=aux_weight
+            logits = output["out"]  # Shape (N,C,H,W)
+            loss_components = calculate_loss_components(
+                logits, y_true, loss_functions, grad_accum_steps
             )
-            aux_loss = reduce(lambda x, y: x + y, aux_loss_components)
-            loss += aux_loss
+            # TODO: add a loss weight parameter
+            loss = reduce(lambda x, y: x + y, loss_components)
+
+            if use_aux and "aux" in output:
+                aux_logits = output["aux"]
+                aux_loss_components = calculate_loss_components(
+                    aux_logits, y_true, loss_functions, grad_accum_steps, weight=aux_weight
+                )
+                aux_loss = reduce(lambda x, y: x + y, aux_loss_components)
+                loss += aux_loss
+
+        # Scales loss and then compute scaled gradients
+        scaler.scale(loss).backward()
 
         # Gradient accumulation.
         # Gradients are calculated for each batch and accumulated over multiple steps.
         # The model weights are updated only after `grad_accum_steps` steps or at the end of the dataset
         # (if it's the final batch).
-        is_batch_update = ((batch_index + 1) % grad_accum_steps == 0) or (
-            batch_index + 1 == len(dataloader)
-        )
+        if is_batch_update(batch_index, grad_accum_steps, dataloader):
+           
+            # Apply the accumulated gradients to update the model's weights
+            scaler.step(optimizer)
 
-        # Reset the gradients of all optimized tensors
-        optimizer.zero_grad(set_to_none=True)
+            # Step optimizer learning rate if using the OneCycle policy
+            if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                scheduler.step()
 
-        # Compute gradients
-        loss.backward()
+            # Update the scale for next iteration
+            scaler.update()
 
-        # Apply the accumulated gradients to update the model's weights
-        step_optimizer(optimizer, is_batch_update)
-
-        step_scheduler(scheduler, is_batch_update)
+            # Reset the gradients of all optimized tensors
+            optimizer.zero_grad(set_to_none=True)
 
         # Accumulate total epoch loss
         epoch_loss += loss.item()
@@ -316,14 +323,15 @@ def validate(
             inputs = inputs.to(device, dtype=INPUT_DTYPE)
             y_true = y_true.to(device, dtype=LABEL_DTYPE)
 
-            logits = model(inputs)["out"]  # Shape (N,C,H,W)
-            loss_components: list[torch.Tensor] = []
-            # Notice how in validation, the aux branch is not used.
-            # Loss
-            for i, loss_fun in enumerate(loss_functions):
-                loss_component = loss_fun(logits, y_true)
-                loss_components.append(loss_component)
-            loss = reduce(lambda x, y: x + y, loss_components)
+            with torch.autocast(device_type=str(device), dtype=torch.float16):
+
+                logits = model(inputs)["out"]  # Shape (N,C,H,W)
+                loss_components: list[torch.Tensor] = []
+                # Notice how in validation, the aux branch is not used.
+                for i, loss_fun in enumerate(loss_functions):
+                    loss_component = loss_fun(logits, y_true)
+                    loss_components.append(loss_component)
+                loss = reduce(lambda x, y: x + y, loss_components)
 
             # Accumulate loss
             epoch_loss += loss.item()
