@@ -288,6 +288,9 @@ def load_checkpoint(model, optimizer, input_path: str, filename: str | None, sca
         raise FileNotFoundError(f"Checkpoint not found at: {checkpoint_path}")
 
     # Load saved model and optimizer parameters
+    # Load the state dict on the CPU. If the state was saved on the GPU, when reloaded, PyTorch places it back on GPU.
+    # https://github.com/huggingface/accelerate/issues/296#issuecomment-1082184342
+    checkpoint = torch.load(checkpoint_path, weights_only=True, map_location="cpu")
     checkpoint = torch.load(checkpoint_path, weights_only=True)
 
     # Load model weights
