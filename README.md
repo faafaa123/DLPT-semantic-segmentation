@@ -1,4 +1,4 @@
-# Semantic Segmentation: Drone aerial views
+# Multi-Class Semantic Segmentation of Drone Imagery
 
 This is the fourth project of the Opencv University course ["Deep Learning with PyTorch"](https://opencv.org/university/deep-learning-with-pytorch/).
 It focuses on applying semantic segmentation on images taken from drones to differentiate between 12 classes.
@@ -6,8 +6,7 @@ It focuses on applying semantic segmentation on images taken from drones to diff
 
 ## Introduction
 
-Semantic segmentation is a task in computer vision, where the objective is to assign a class label to every pixel in an 
-image. This project focuses on classifying the pixels of images taken from drones into 12 classes.
+Semantic segmentation is a foundational computer vision task that assigns a class label to every pixel in an image. This project applies segmentation to drone imagery, addressing challenges such as diverse classes and imbalanced data to classify pixels into 12 categories. Potential applications include autonomous navigation and environmental monitoring.
 
 
 ## Data
@@ -20,10 +19,12 @@ the following 12 classes:
 Examples:
 ![img.png](media/img.png)
 
+One of the challenges of this dataset is the class imbalance. The following image shows the number of pixels per class across the whole dataset:
+![alt text](media/pixel_count.png)
+
 ## The methods used
 
-Fine-tuning of a DeepLabV3 ResNet-101 pre-trained model using a custom PyTorch training loop. The objective was to learn
-how to manually implement all the required steps, particularly the ones of the training loop.
+Fine-tuning a pre-trained DeepLabV3 ResNet-101 model using a custom training loop in PyTorch. The primary objective was to gain hands-on experience with implementing all the steps of the training process in PyTorch.
 
 - The dataset was split using a stratified shuffle split scheme into train and validation subsets with 80% and 20% of the 
 available data, respectively. The stratification was done based on the presence or not of a class in each image. 
@@ -32,20 +33,15 @@ available data, respectively. The stratification was done based on the presence 
   - The Focal Loss: is a modification of the Cross-Entropy loss focused on learning from hard negative examples.
   - The Soft Dice Loss: is effective in addressing the challenge of imbalanced foreground and background regions.
   - An equally weighted combination of the Focal Loss and the Soft Dice Loss.
-  - The Tversky Loss
-
-- An SGD optimizer using the setup used by the YOLOv5 training script, where three parameter groups are defined for 
-different weight decay configurations.
+  - The Tversky Loss: An improvement over the Dice loss
 
 - A learning rate scheduler that implements the 1-cycle policy. It adjusts the learning rate from an initial rate to a 
 maximum, then decreases it to a much lower minimum.
 
-- The custom training loop includes:
-    - updating the optimizer learning rate by using a LR scheduler
-    - gradient accumulation
-    - evaluation on the validation set
-    - tracking of training losses and scores
-    - tracking of validation losses and scores
+- Custom training loop features:
+    - Gradient accumulation
+    - Automatic Mixed Precision 
+    - Tracking of training/validation losses and scores
     - tracking of per-class scores
 
 
