@@ -1,12 +1,8 @@
 # External imports
 import torch
-from torchvision import models
-import segmentation_models_pytorch as smp
 from torchinfo import summary
-from torchvision.models.segmentation import (
-    DeepLabV3_ResNet50_Weights,
-    DeepLabV3_ResNet101_Weights,
-)
+from torchvision import models
+from torchvision.models.segmentation import DeepLabV3_ResNet101_Weights
 
 
 def make_deeplabv3_resnet101(num_classes):
