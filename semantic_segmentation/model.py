@@ -95,8 +95,6 @@ def unfreeze_deeplabv3_heads(model, all=False):
         print(name, p.requires_grad)
 
 
-            print(f"Unfreezing parameters of layer {layer}")
-
 if __name__ == "__main__":
     model = make_deeplabv3_resnet101(12, torch.device("cpu"))
     unfreeze_deeplabv3_heads(model)
