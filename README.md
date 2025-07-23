@@ -42,7 +42,7 @@ maximum, then decreases it to a much lower minimum.
     - Gradient accumulation
     - Automatic Mixed Precision 
     - Tracking of training/validation losses and scores
-    - tracking of per-class scores
+    - Tracking of per-class scores
 
 
 ## Discussion
