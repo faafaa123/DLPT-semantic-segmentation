@@ -4,16 +4,16 @@ from functools import reduce
 from typing import Callable, Optional
 
 # External imports
-import torch
+import matplotlib.pyplot as plt
 import numpy as np
-from tqdm.autonotebook import tqdm
-from torch.utils.tensorboard import SummaryWriter
+import torch
 from livelossplot import PlotLosses
+from torch.utils.tensorboard import SummaryWriter
+from tqdm.autonotebook import tqdm
 
 # Local imports
-from semantic_segmentation.utils import setup_system, create_checkpoint_dir
 from semantic_segmentation.configuration import SystemConfig
-
+from semantic_segmentation.utils import create_checkpoint_dir, setup_system
 
 INPUT_DTYPE = torch.float32
 LABEL_DTYPE = torch.long
@@ -75,10 +75,10 @@ def main(
 
     if len(loss_functions) > 1:
         groups["Train loss components"] = [
-            f"train_loss{i+1}" for i in range(len(loss_functions))
+            f"train_loss{i + 1}" for i in range(len(loss_functions))
         ]
         groups["Valid loss components"] = [
-            f"valid_loss{i+1}" for i in range(len(loss_functions))
+            f"valid_loss{i + 1}" for i in range(len(loss_functions))
         ]
 
     live_plot = PlotLosses(groups=groups)
@@ -99,6 +99,7 @@ def main(
     # https://web.stanford.edu/~nanbhas/blog/forward-hooks-pytorch/
     # https://medium.com/@rekalantar/how-to-visualize-layer-activations-in-pytorch-d0be1076ecc3
     activations = {}
+
     def get_activation(name):
         def hook(model, input, output):
             activations[name] = output.detach()
@@ -107,11 +108,12 @@ def main(
 
     # register forward hooks on the layers of choice
     model.backbone["maxpool"].register_forward_hook(get_activation("maxpool"))
-    model.backbone["layer4"][0].conv1.register_forward_hook(get_activation("layer4_0_conv1"))
+    model.backbone["layer4"][0].conv1.register_forward_hook(
+        get_activation("layer4_0_conv1")
+    )
 
     try:
         for e in range(starting_epoch, epochs + 1):
-
             print("\n[INFO] EPOCH: {}/{}".format(e, epochs))
 
             live_logs = {}
@@ -138,10 +140,10 @@ def main(
             # Liveloss tracker
             live_logs["train_loss"] = train_loss
             for i, train_loss_component in enumerate(train_loss_components):
-                live_logs[f"train_loss{i+1}"] = train_loss_component
+                live_logs[f"train_loss{i + 1}"] = train_loss_component
             live_logs["valid_loss"] = valid_loss
             for i, valid_loss_component in enumerate(valid_loss_components):
-                live_logs[f"valid_loss{i+1}"] = valid_loss_component
+                live_logs[f"valid_loss{i + 1}"] = valid_loss_component
             live_logs["train_score"] = train_score
             live_logs["valid_score"] = valid_score
 
@@ -208,7 +210,9 @@ def main(
             grid = make_grid(activations["layer4_0_conv1"], num_rows=4)
             writer.add_image("layer4_0_conv1", grid, e, dataformats="HW")
 
-            if scheduler is not None and not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+            if scheduler is not None and not isinstance(
+                scheduler, torch.optim.lr_scheduler.OneCycleLR
+            ):
                 scheduler.step()
 
     except KeyboardInterrupt:
@@ -238,7 +242,9 @@ def is_batch_update(batch_index, grad_accum_steps, dataloader):
     The model weights are updated only after `grad_accum_steps` steps or at the end of the dataset
     (if it's the final batch).
     """
-    return ((batch_index + 1) % grad_accum_steps == 0) or (batch_index + 1 == len(dataloader))      
+    return ((batch_index + 1) % grad_accum_steps == 0) or (
+        batch_index + 1 == len(dataloader)
+    )
 
 
 def train(
@@ -253,7 +259,7 @@ def train(
     scaler,
     use_aux: bool = False,
     aux_weight: float = 0.5,
-    use_amp=False
+    use_amp=False,
 ) -> tuple[float, list[float], float]:
     """
     Train for one epoch.
@@ -268,7 +274,7 @@ def train(
     Also check:
     https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-accumulation
     https://discuss.pytorch.org/t/why-do-we-need-to-set-the-gradients-manually-to-zero-in-pytorch/4903/20
-    
+
 
     """
 
@@ -282,11 +288,12 @@ def train(
     num_steps = len(dataloader)
     progress_bar = tqdm(dataloader, total=num_steps)
     for batch_index, (inputs, y_true) in enumerate(progress_bar):
-
         inputs = inputs.to(device, dtype=INPUT_DTYPE)
         y_true = y_true.to(device, dtype=LABEL_DTYPE)  # Shape (N,H,W)
 
-        with torch.autocast(device_type=str(device), dtype=torch.float16, enabled=use_amp):
+        with torch.autocast(
+            device_type=str(device), dtype=torch.float16, enabled=use_amp
+        ):
             output = model(inputs)
 
             logits = output["out"]  # Shape (N,C,H,W)
@@ -299,7 +306,11 @@ def train(
             if use_aux and "aux" in output:
                 aux_logits = output["aux"]
                 aux_loss_components = calculate_loss_components(
-                    aux_logits, y_true, loss_functions, grad_accum_steps, weight=aux_weight
+                    aux_logits,
+                    y_true,
+                    loss_functions,
+                    grad_accum_steps,
+                    weight=aux_weight,
                 )
                 aux_loss = reduce(lambda x, y: x + y, aux_loss_components)
                 loss += aux_loss
@@ -312,12 +323,13 @@ def train(
         # The model weights are updated only after `grad_accum_steps` steps or at the end of the dataset
         # (if it's the final batch).
         if is_batch_update(batch_index, grad_accum_steps, dataloader):
-           
             # Apply the accumulated gradients to update the model's weights
             scaler.step(optimizer)
 
             # Step optimizer learning rate if using the OneCycle policy
-            if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+            if scheduler is not None and isinstance(
+                scheduler, torch.optim.lr_scheduler.OneCycleLR
+            ):
                 scheduler.step()
 
             # Update the scale for next iteration
@@ -381,7 +393,6 @@ def validate(
     # Consider instead using `with torch.inference_mode():`
     # https://pytorch-dev-podcast.simplecast.com/episodes/inference-mode
     with torch.no_grad():
-
         num_steps = len(dataloader)
         progress_bar = tqdm(dataloader, total=num_steps)
         for inputs, y_true in progress_bar:
@@ -389,7 +400,6 @@ def validate(
             y_true = y_true.to(device, dtype=LABEL_DTYPE)
 
             with torch.autocast(device_type=str(device), dtype=torch.float16):
-
                 logits = model(inputs)["out"]  # Shape (N,C,H,W)
                 loss_components: list[torch.Tensor] = []
                 # Notice how in validation, the aux branch is not used.
