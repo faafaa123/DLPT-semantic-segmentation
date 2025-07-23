@@ -20,7 +20,7 @@ Examples:
 ![img.png](media/img.png)
 
 One of the challenges of this dataset is the class imbalance. The following image shows the number of pixels per class across the whole dataset:
-![alt text](media/pixel_count.png)
+![Number of pixels per class](media/pixel_count.png)
 
 ## The methods used
 
